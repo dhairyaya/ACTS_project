@@ -20,32 +20,38 @@ class ApiClient {
               ),
             );
 
-  /// Submits a new complaint with image file and GPS metadata
-  Future<ComplaintModel> submitComplaint({
-    required File imageFile,
+  /// Plain-text complaint submission with optional photo & GPS auto-fill
+  Future<Map<String, dynamic>> submitComplaint({
+    required String rawText,
     required double latitude,
     required double longitude,
-    String? userDescription,
+    File? imageFile,
+    String? campusZone,
     String? address,
     String? userIdentifier,
   }) async {
-    String fileName = imageFile.path.split(Platform.pathSeparator).last;
-    
-    FormData formData = FormData.fromMap({
-      'image': await MultipartFile.fromFile(imageFile.path, filename: fileName),
+    Map<String, dynamic> formMap = {
+      'raw_text': rawText,
       'latitude': latitude.toString(),
       'longitude': longitude.toString(),
-      'user_description': userDescription ?? '',
+      'campus_zone': campusZone ?? '',
       'address': address ?? '',
       if (userIdentifier != null) 'user_identifier': userIdentifier,
-    });
+    };
+
+    if (imageFile != null) {
+      String fileName = imageFile.path.split(Platform.pathSeparator).last;
+      formMap['image'] = await MultipartFile.fromFile(imageFile.path, filename: fileName);
+    }
+
+    FormData formData = FormData.fromMap(formMap);
 
     final response = await _dio.post(
       ApiConstants.reportComplaint,
       data: formData,
     );
 
-    return ComplaintModel.fromJson(response.data);
+    return response.data;
   }
 
   /// Fetches citizen submissions
@@ -59,7 +65,7 @@ class ApiClient {
     return data.map((json) => ComplaintModel.fromJson(json)).toList();
   }
 
-  /// Fetches lightweight map markers for admin view
+  /// Fetches live crowd-weighted clusters for Admin Command Center Map
   Future<List<MapMarkerModel>> fetchMapMarkers() async {
     final response = await _dio.get(ApiConstants.adminMapMarkers);
     final List data = response.data is List ? response.data : (response.data['results'] ?? []);
@@ -72,18 +78,48 @@ class ApiClient {
     return ComplaintModel.fromJson(response.data);
   }
 
-  /// Updates complaint status and notes
-  Future<void> updateComplaintStatus({
-    required String id,
-    required String status,
-    String? adminNotes,
+  /// Step 6: Reporter 2-way confirmation or reopening of resolved issue
+  Future<void> confirmResolution({
+    required String complaintId,
+    required bool isConfirmed,
+    String? feedback,
   }) async {
-    await _dio.patch(
-      '${ApiConstants.adminUpdateStatus}$id/status/',
+    await _dio.post(
+      '${ApiConstants.complaintDetail}$complaintId/confirm/',
       data: {
-        'status': status,
-        if (adminNotes != null) 'admin_notes': adminNotes,
+        'is_confirmed': isConfirmed,
+        'feedback': feedback ?? '',
       },
     );
+  }
+
+  /// Section 5.4: Admin manual override of priority
+  Future<void> overridePriority({
+    required String clusterId,
+    required double newPriority,
+    String? adminNotes,
+  }) async {
+    await _dio.post(
+      '/api/admin/clusters/$clusterId/override-priority/',
+      data: {
+        'priority': newPriority,
+        'admin_notes': adminNotes ?? '',
+      },
+    );
+  }
+
+  /// Section 5.4: Campus Health Analytics
+  Future<List<dynamic>> fetchCampusHealth() async {
+    final response = await _dio.get('/api/admin/campus-health/');
+    return response.data['campus_health'] ?? [];
+  }
+
+  /// Section 5.5: Admin Connect Portal direct directory
+  Future<Map<String, dynamic>> fetchAdminConnect(String department) async {
+    final response = await _dio.get(
+      '/api/admin/connect/',
+      queryParameters: {'department': department},
+    );
+    return response.data;
   }
 }

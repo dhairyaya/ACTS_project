@@ -17,12 +17,12 @@ class ReportIssueScreen extends StatefulWidget {
 class _ReportIssueScreenState extends State<ReportIssueScreen> {
   final CameraService _cameraService = CameraService();
   final ApiClient _apiClient = ApiClient();
-  final TextEditingController _descriptionController = TextEditingController();
-  final TextEditingController _addressController = TextEditingController();
+  final TextEditingController _textController = TextEditingController();
+  final TextEditingController _zoneController = TextEditingController();
 
   File? _selectedImage;
-  double? _latitude;
-  double? _longitude;
+  double _latitude = 28.6139;
+  double _longitude = 77.2090;
   bool _isLoading = false;
   bool _isFetchingLocation = false;
 
@@ -34,14 +34,19 @@ class _ReportIssueScreenState extends State<ReportIssueScreen> {
 
   Future<void> _fetchGPS() async {
     setState(() => _isFetchingLocation = true);
-    final pos = await LocationService.getCurrentLocation();
-    if (pos != null) {
-      setState(() {
-        _latitude = pos.latitude;
-        _longitude = pos.longitude;
-      });
+    try {
+      final pos = await LocationService.getCurrentLocation();
+      if (pos != null) {
+        setState(() {
+          _latitude = pos.latitude;
+          _longitude = pos.longitude;
+        });
+      }
+    } catch (_) {
+      // Fallback coordinates preserved
+    } finally {
+      setState(() => _isFetchingLocation = false);
     }
-    setState(() => _isFetchingLocation = false);
   }
 
   Future<void> _pickImage(bool fromCamera) async {
@@ -54,46 +59,70 @@ class _ReportIssueScreenState extends State<ReportIssueScreen> {
   }
 
   Future<void> _submitReport() async {
-    if (_selectedImage == null) {
+    final text = _textController.text.trim();
+    if (text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please capture or select an issue photo')),
+        const SnackBar(content: Text('Please describe what is broken in your own words.')),
       );
       return;
     }
 
-    if (_latitude == null || _longitude == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('GPS coordinates missing. Retrying location fetch...')),
-      );
-      await _fetchGPS();
-      if (_latitude == null || _longitude == null) return;
-    }
-
     setState(() => _isLoading = true);
     try {
-      final complaint = await _apiClient.submitComplaint(
-        imageFile: _selectedImage!,
-        latitude: _latitude!,
-        longitude: _longitude!,
-        userDescription: _descriptionController.text.trim(),
-        address: _addressController.text.trim(),
+      final result = await _apiClient.submitComplaint(
+        rawText: text,
+        latitude: _latitude,
+        longitude: _longitude,
+        imageFile: _selectedImage,
+        campusZone: _zoneController.text.trim(),
       );
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Complaint Submitted! Severity Score: ${complaint.severityScore}/10'),
-          backgroundColor: AppTheme.secondaryTeal,
+      final crowdCount = result['crowd_report_count'] ?? 1;
+      final priority = result['computed_priority'] ?? 5.0;
+
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle, color: AppTheme.secondaryTeal),
+              SizedBox(width: 8),
+              Text('Report Triage Complete!'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('AI estimated priority: $priority/10', style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(
+                crowdCount > 1
+                    ? '⚡ Merged with $crowdCount existing reports in this zone. Priority automatically raised!'
+                    : 'Report logged & routed to the maintenance team.',
+                style: const TextStyle(color: AppTheme.textDark),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _selectedImage = null;
+                  _textController.clear();
+                  _zoneController.clear();
+                });
+              },
+              child: const Text('OK'),
+            ),
+          ],
         ),
       );
-
-      setState(() {
-        _selectedImage = null;
-        _descriptionController.clear();
-        _addressController.clear();
-      });
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to submit report: $e'), backgroundColor: Colors.red),
+        SnackBar(content: Text('Submission failed: $e'), backgroundColor: Colors.red),
       );
     } finally {
       setState(() => _isLoading = false);
@@ -107,13 +136,13 @@ class _ReportIssueScreenState extends State<ReportIssueScreen> {
         title: const Text('ACTS - Report Issue', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
-            icon: const Icon(Icons.history),
+            icon: const Icon(Icons.history_edu),
             tooltip: 'My Reports',
             onPressed: () => Navigator.pushNamed(context, AppRoutes.myReports),
           ),
           IconButton(
-            icon: const Icon(Icons.map_outlined),
-            tooltip: 'Admin Map',
+            icon: const Icon(Icons.map_rounded),
+            tooltip: 'Command Map',
             onPressed: () => Navigator.pushNamed(context, AppRoutes.adminMap),
           ),
         ],
@@ -123,107 +152,112 @@ class _ReportIssueScreenState extends State<ReportIssueScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Image Picker Section
+            // Section 5.7: Plain text problem description
+            const Text(
+              'What needs fixing?',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppTheme.primaryBlue),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Describe the problem in plain words. AI will detect the department, severity, and urgency automatically.',
+              style: TextStyle(fontSize: 13, color: AppTheme.textMuted),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _textController,
+              maxLines: 4,
+              decoration: InputDecoration(
+                hintText: 'e.g. Water leaking near hostel Block B entrance, pooling on walkway...',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                filled: true,
+                fillColor: Colors.white,
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // Optional Photo Capture
+            const Text(
+              'Attach Photo (Optional)',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
             if (_selectedImage != null)
               ImagePreviewCard(
                 imageFile: _selectedImage,
                 onRemove: () => setState(() => _selectedImage = null),
               )
             else
-              Container(
-                height: 180,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(Icons.camera_alt_outlined, size: 48, color: AppTheme.textMuted),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        ElevatedButton.icon(
-                          onPressed: () => _pickImage(true),
-                          icon: const Icon(Icons.camera_alt),
-                          label: const Text('Camera'),
-                        ),
-                        const SizedBox(width: 12),
-                        OutlinedButton.icon(
-                          onPressed: () => _pickImage(false),
-                          icon: const Icon(Icons.photo_library),
-                          label: const Text('Gallery'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-            const SizedBox(height: 16),
-
-            // Location Info Card
-            Card(
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: Colors.grey.shade300),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(12.0),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.my_location,
-                      color: _latitude != null ? AppTheme.secondaryTeal : Colors.red,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _isFetchingLocation
-                            ? 'Fetching precise GPS coordinates...'
-                            : (_latitude != null
-                                ? 'GPS: ${_latitude!.toStringAsFixed(5)}, ${_longitude!.toStringAsFixed(5)}'
-                                : 'Location unavailable. Tap refresh.'),
-                        style: const TextStyle(fontSize: 13, color: AppTheme.textDark),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _pickImage(true),
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('Take Photo'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.refresh, size: 20),
-                      onPressed: _fetchGPS,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _pickImage(false),
+                      icon: const Icon(Icons.photo_library),
+                      label: const Text('Gallery'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ),
 
             const SizedBox(height: 16),
 
-            // Address Input
+            // Location & Zone Tagging
             TextField(
-              controller: _addressController,
+              controller: _zoneController,
               decoration: InputDecoration(
-                labelText: 'Landmark / Street Address (Optional)',
+                labelText: 'Building / Zone (Optional)',
+                hintText: 'e.g. Hostel Block B, Central Library, Cafeteria',
+                prefixIcon: const Icon(Icons.apartment),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 filled: true,
                 fillColor: Colors.white,
               ),
             ),
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
 
-            // Description Input
-            TextField(
-              controller: _descriptionController,
-              maxLines: 3,
-              decoration: InputDecoration(
-                labelText: 'Describe the civic issue...',
-                hintText: 'e.g. Deep pothole causing waterlogging near main gate.',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                filled: true,
-                fillColor: Colors.white,
+            // Auto-filled GPS badge
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.location_on, color: AppTheme.secondaryTeal, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _isFetchingLocation
+                          ? 'Acquiring GPS location...'
+                          : 'Auto GPS: ${_latitude.toStringAsFixed(4)}, ${_longitude.toStringAsFixed(4)}',
+                      style: const TextStyle(fontSize: 12, color: AppTheme.textDark),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    onPressed: _fetchGPS,
+                  ),
+                ],
               ),
             ),
 
@@ -232,19 +266,13 @@ class _ReportIssueScreenState extends State<ReportIssueScreen> {
             // Submit Button
             ElevatedButton(
               onPressed: _isLoading ? null : _submitReport,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
               child: _isLoading
                   ? const SizedBox(
                       height: 20,
                       width: 20,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : const Text(
-                      'SUBMIT COMPLAINT',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
+                  : const Text('SUBMIT REPORT', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
           ],
         ),

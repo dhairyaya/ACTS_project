@@ -16,9 +16,6 @@ class IssueDetailScreen extends StatefulWidget {
 class _IssueDetailScreenState extends State<IssueDetailScreen> {
   final ApiClient _apiClient = ApiClient();
   late Future<ComplaintModel> _detailFuture;
-  final TextEditingController _notesController = TextEditingController();
-  String? _selectedStatus;
-  bool _isUpdating = false;
 
   @override
   void initState() {
@@ -30,34 +27,92 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     _detailFuture = _apiClient.fetchComplaintDetail(widget.complaintId);
   }
 
-  Future<void> _updateStatus() async {
-    if (_selectedStatus == null) return;
-    setState(() => _isUpdating = true);
-    try {
-      await _apiClient.updateComplaintStatus(
-        id: widget.complaintId,
-        status: _selectedStatus!,
-        adminNotes: _notesController.text.trim(),
-      );
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Status updated successfully!')),
-      );
-      _loadDetail();
-      setState(() {});
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update status: $e'), backgroundColor: Colors.red),
-      );
-    } finally {
-      setState(() => _isUpdating = false);
-    }
+  void _showPriorityOverrideDialog(ComplaintModel complaint) {
+    double selectedScore = complaint.computedPriority;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Manual Priority Override'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Current Priority: ${selectedScore.toStringAsFixed(1)}/10', style: const TextStyle(fontWeight: FontWeight.bold)),
+              Slider(
+                value: selectedScore,
+                min: 1.0,
+                max: 10.0,
+                divisions: 9,
+                label: selectedScore.toStringAsFixed(0),
+                onChanged: (val) => setDialogState(() => selectedScore = val),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                if (complaint.clusterId != null) {
+                  await _apiClient.overridePriority(
+                    clusterId: complaint.clusterId!,
+                    newPriority: selectedScore,
+                  );
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Priority adjusted to ${selectedScore.toStringAsFixed(0)}/10')),
+                  );
+                  _loadDetail();
+                  setState(() {});
+                }
+              },
+              child: const Text('SAVE OVERRIDE'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openAdminConnect(String department) async {
+    final contact = await _apiClient.fetchAdminConnect(department);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.support_agent, color: AppTheme.primaryBlue),
+            const SizedBox(width: 8),
+            Text('$department Officer'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Responsible Officer: ${contact['officer']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            Text('Designation: ${contact['designation']}'),
+            const SizedBox(height: 4),
+            Text('Direct Phone: ${contact['phone']}'),
+            const SizedBox(height: 4),
+            Text('Email: ${contact['email']}'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CLOSE')),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Complaint Triage Details'),
+        title: const Text('Triage & Dispatch Details'),
       ),
       body: FutureBuilder<ComplaintModel>(
         future: _detailFuture,
@@ -66,73 +121,71 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError || !snapshot.hasData) {
-            return Center(child: Text('Error loading details: ${snapshot.error}'));
+            return Center(child: Text('Error loading ticket: ${snapshot.error}'));
           }
 
           final complaint = snapshot.data!;
-          if (_selectedStatus == null) {
-            _selectedStatus = complaint.status;
-            _notesController.text = complaint.adminNotes;
-          }
-
           final gemini = complaint.geminiAnalysis;
-          final yolo = complaint.yoloDetections;
 
           return SingleChildScrollView(
             padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Image Display
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Container(
-                    height: 240,
-                    color: Colors.grey[200],
-                    child: complaint.imageUrl.isNotEmpty
-                        ? Image.network(complaint.imageUrl, fit: BoxFit.cover)
-                        : const Icon(Icons.image, size: 64),
+                if (complaint.imageUrl != null && complaint.imageUrl!.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.network(complaint.imageUrl!, height: 220, fit: BoxFit.cover),
                   ),
-                ),
-
                 const SizedBox(height: 16),
 
-                // Severity & Validation Header
+                // Priority & Crowd Indicators
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    SeverityBadge(severity: complaint.severityScore, fontSize: 14),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: complaint.isValidImage ? Colors.green.shade50 : Colors.orange.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: complaint.isValidImage ? Colors.green : Colors.orange,
+                    SeverityBadge(severity: complaint.computedPriority.round(), fontSize: 14),
+                    if (complaint.crowdReportCount > 1)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: Colors.purple.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.purple.shade300),
+                        ),
+                        child: Text(
+                          '🔥 Crowd Boost: ${complaint.crowdReportCount} merged reports',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.purple.shade800),
                         ),
                       ),
-                      child: Text(
-                        complaint.isValidImage ? 'CV Check: Clear' : 'CV Check: Blurry',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: complaint.isValidImage ? Colors.green.shade800 : Colors.orange.shade800,
-                        ),
-                      ),
-                    ),
                   ],
                 ),
-
                 const SizedBox(height: 16),
 
-                // Gemini AI Synthesis Card
+                // Plain-text Description
+                Card(
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Reporter Description', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        const SizedBox(height: 6),
+                        Text(complaint.rawText, style: const TextStyle(fontSize: 14, color: AppTheme.textDark)),
+                        const SizedBox(height: 8),
+                        Text('Campus Zone: ${complaint.campusZone.isNotEmpty ? complaint.campusZone : "Campus"}', style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Gemini AI Triage Card
                 Card(
                   elevation: 0,
                   color: Colors.blue.shade50,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(color: Colors.blue.shade200),
-                  ),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.blue.shade200)),
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
@@ -142,108 +195,42 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                           children: [
                             Icon(Icons.auto_awesome, color: AppTheme.primaryBlue, size: 20),
                             SizedBox(width: 8),
-                            Text(
-                              'Gemini AI Triage Analysis',
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppTheme.primaryBlue),
-                            ),
+                            Text('Gemini AI Triage Assessment', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppTheme.primaryBlue)),
                           ],
                         ),
                         const Divider(height: 20),
-                        Text('Category: ${gemini['category'] ?? 'N/A'}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                        Text('Department: ${complaint.department}', style: const TextStyle(fontWeight: FontWeight.w600)),
                         const SizedBox(height: 4),
-                        Text('Assigned Dept: ${gemini['department'] ?? 'N/A'}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 4),
-                        Text('Urgency: ${gemini['urgency'] ?? 'N/A'}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 8),
-                        Text('AI Summary: ${gemini['summary'] ?? complaint.userDescription}'),
+                        Text('AI Summary: ${gemini['summary'] ?? complaint.rawText}'),
                         if (gemini['recommended_action'] != null) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            'Action Plan: ${gemini['recommended_action']}',
-                            style: const TextStyle(fontStyle: FontStyle.italic, color: AppTheme.textDark),
-                          ),
-                        ]
+                          const SizedBox(height: 6),
+                          Text('Action Plan: ${gemini['recommended_action']}', style: const TextStyle(fontStyle: FontStyle.italic)),
+                        ],
                       ],
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 16),
 
-                // Location Details
-                Card(
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(color: Colors.grey.shade200),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Location Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                        const SizedBox(height: 8),
-                        Text('Address: ${complaint.address.isNotEmpty ? complaint.address : "No address specified"}'),
-                        const SizedBox(height: 4),
-                        Text('Coordinates: ${complaint.latitude}, ${complaint.longitude}', style: const TextStyle(color: AppTheme.textMuted, fontSize: 13)),
-                      ],
+                // Actions Section
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => _showPriorityOverrideDialog(complaint),
+                        icon: const Icon(Icons.tune),
+                        label: const Text('Override Priority'),
+                      ),
                     ),
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                // Status Update & Action Section
-                Card(
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('Update Status & Dispatch', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                        const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
-                          value: _selectedStatus,
-                          decoration: InputDecoration(
-                            labelText: 'Status',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: 'PENDING', child: Text('PENDING')),
-                            DropdownMenuItem(value: 'IN_PROGRESS', child: Text('IN PROGRESS')),
-                            DropdownMenuItem(value: 'RESOLVED', child: Text('RESOLVED')),
-                            DropdownMenuItem(value: 'REJECTED', child: Text('REJECTED')),
-                          ],
-                          onChanged: (val) => setState(() => _selectedStatus = val),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _notesController,
-                          maxLines: 2,
-                          decoration: InputDecoration(
-                            labelText: 'Admin Notes / Crew Remarks',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: _isUpdating ? null : _updateStatus,
-                            child: _isUpdating
-                                ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : const Text('SAVE STATUS'),
-                          ),
-                        ),
-                      ],
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _openAdminConnect(complaint.department),
+                        icon: const Icon(Icons.contact_phone),
+                        label: const Text('Admin Connect'),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ],
             ),

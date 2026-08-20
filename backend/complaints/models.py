@@ -1,41 +1,99 @@
 import uuid
 from django.db import models
 
+class DepartmentType(models.TextChoices):
+    PLUMBING = 'PLUMBING', 'Plumbing & Water Supply'
+    ELECTRICAL = 'ELECTRICAL', 'Electrical & Lighting'
+    SANITATION = 'SANITATION', 'Sanitation & Waste Management'
+    CIVIL = 'CIVIL', 'Civil Infrastructure & Roads'
+    SAFETY = 'SAFETY', 'Public Safety & Hazards'
+    GENERAL = 'GENERAL', 'General Administration'
+
 class ComplaintStatus(models.TextChoices):
-    PENDING = 'PENDING', 'Pending Review'
+    SUBMITTED = 'SUBMITTED', 'Submitted'
+    QUEUED = 'QUEUED', 'Queued in Triage'
+    ASSIGNED = 'ASSIGNED', 'Assigned to Crew'
     IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
-    RESOLVED = 'RESOLVED', 'Resolved'
-    REJECTED = 'REJECTED', 'Rejected'
+    RESOLVED = 'RESOLVED', 'Resolved (Pending Confirmation)'
+    CLOSED = 'CLOSED', 'Confirmed & Closed'
+    REOPENED = 'REOPENED', 'Reopened by Citizen'
+    REJECTED = 'REJECTED', 'Rejected / Spam'
 
-class Complaint(models.Model):
+class MaintenanceCrew(models.Model):
+    """Crew member / repair team capable of resolving specific infrastructure issues."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user_identifier = models.CharField(max_length=255, blank=True, null=True, help_text="Device ID or User ID")
-    
-    # Image & Description
-    image = models.ImageField(upload_to='uploads/%Y/%m/%d/')
-    compressed_image = models.ImageField(upload_to='uploads/compressed/%Y/%m/%d/', blank=True, null=True)
-    user_description = models.TextField(blank=True, default='')
+    name = models.CharField(max_length=150)
+    department = models.CharField(max_length=50, choices=DepartmentType.choices, default=DepartmentType.GENERAL)
+    phone_number = models.CharField(max_length=20, blank=True, default='')
+    current_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    current_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    is_available = models.BooleanField(default=True)
+    active_tasks_count = models.PositiveIntegerField(default=0)
 
-    # Location Information
+    def __str__(self):
+        return f"{self.name} ({self.department}) - Active Tasks: {self.active_tasks_count}"
+
+class ComplaintCluster(models.Model):
+    """
+    Crowd-weighted cluster for grouping duplicate reports describing the same underlying issue.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+    department = models.CharField(max_length=50, choices=DepartmentType.choices, default=DepartmentType.GENERAL)
+    campus_zone = models.CharField(max_length=150, blank=True, default='', help_text="e.g. Hostel Block B, Library, Cafeteria")
     latitude = models.DecimalField(max_digits=9, decimal_places=6)
     longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    
+    # Crowd Urgency Calculations
+    base_severity = models.IntegerField(default=1, help_text="AI evaluated initial severity (1-10)")
+    crowd_report_count = models.PositiveIntegerField(default=1, help_text="Number of students/citizens reporting this")
+    computed_priority = models.FloatField(default=1.0, help_text="Crowd & recency weighted urgency score")
+    
+    status = models.CharField(max_length=30, choices=ComplaintStatus.choices, default=ComplaintStatus.SUBMITTED)
+    assigned_crew = models.ForeignKey(MaintenanceCrew, null=True, blank=True, on_delete=models.SET_NULL, related_name='clusters')
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-computed_priority', '-created_at']
+
+    def __str__(self):
+        return f"[{self.campus_zone}] {self.title} (Crowd: {self.crowd_report_count}, Priority: {self.computed_priority:.1f})"
+
+class Complaint(models.Model):
+    """Individual civic issue report submitted by a citizen / student."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user_identifier = models.CharField(max_length=255, blank=True, default='anonymous_user')
+    user_trust_score = models.FloatField(default=1.0, help_text="User reputation score (0.0 to 1.0)")
+    
+    # Text Description & Optional Media
+    raw_text = models.TextField(help_text="Plain-text problem description in user's own words")
+    image = models.ImageField(upload_to='uploads/%Y/%m/%d/', blank=True, null=True)
+    compressed_image = models.ImageField(upload_to='uploads/compressed/%Y/%m/%d/', blank=True, null=True)
+
+    # Location & Campus Zone
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    campus_zone = models.CharField(max_length=150, blank=True, default='', help_text="Building or Zone Name")
     address = models.CharField(max_length=500, blank=True, default='')
 
-    # CV & AI Validation Results
-    blur_score = models.FloatField(default=0.0, help_text="Laplacian variance blur metric")
-    is_valid_image = models.BooleanField(default=True, help_text="False if image is overly blurry or invalid")
+    # AI Triage & CV Results
+    department = models.CharField(max_length=50, choices=DepartmentType.choices, default=DepartmentType.GENERAL)
+    initial_severity = models.IntegerField(default=5, help_text="AI estimated severity 1-10")
+    blur_score = models.FloatField(default=0.0)
+    is_valid_image = models.BooleanField(default=True)
+    yolo_detections = models.JSONField(default=dict, blank=True)
+    gemini_analysis = models.JSONField(default=dict, blank=True)
     
-    # Detection & Severity
-    yolo_detections = models.JSONField(default=dict, blank=True, help_text="Detected objects & bounding boxes")
-    gemini_analysis = models.JSONField(default=dict, blank=True, help_text="Multimodal summary & civic taxonomy")
-    severity_score = models.IntegerField(default=1, help_text="Calculated severity from 1 (Low) to 10 (Critical)")
+    # Crowd Clustering & Dispatch
+    cluster = models.ForeignKey(ComplaintCluster, null=True, blank=True, on_delete=models.SET_NULL, related_name='reports')
+    assigned_crew = models.ForeignKey(MaintenanceCrew, null=True, blank=True, on_delete=models.SET_NULL, related_name='assigned_complaints')
+    status = models.CharField(max_length=30, choices=ComplaintStatus.choices, default=ComplaintStatus.SUBMITTED)
     
-    # Triage and Status
-    status = models.CharField(
-        max_length=20,
-        choices=ComplaintStatus.choices,
-        default=ComplaintStatus.PENDING
-    )
+    # 2-Way Resolution Confirmation
+    is_confirmed_by_reporter = models.BooleanField(null=True, blank=True, help_text="True if reporter confirms fix, False if reopened")
+    reporter_feedback = models.TextField(blank=True, default='')
     admin_notes = models.TextField(blank=True, default='')
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -45,8 +103,9 @@ class Complaint(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['status', '-created_at']),
+            models.Index(fields=['campus_zone', 'status']),
             models.Index(fields=['latitude', 'longitude']),
         ]
 
     def __str__(self):
-        return f"Complaint #{str(self.id)[:8]} - {self.status} (Severity: {self.severity_score}/10)"
+        return f"Report #{str(self.id)[:8]} - {self.department} ({self.status})"

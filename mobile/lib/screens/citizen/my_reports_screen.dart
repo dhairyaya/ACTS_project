@@ -28,11 +28,70 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
     });
   }
 
+  void _showConfirmationDialog(ComplaintModel complaint) {
+    final feedbackController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Confirm Resolution'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('The maintenance team has marked this issue as resolved. Has it been fixed to your satisfaction?'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: feedbackController,
+              decoration: const InputDecoration(
+                labelText: 'Feedback / Remarks (Optional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _apiClient.confirmResolution(
+                complaintId: complaint.id,
+                isConfirmed: false,
+                feedback: feedbackController.text.trim(),
+              );
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Issue marked as not fixed. Ticket reopened!')),
+              );
+              _refresh();
+            },
+            child: const Text('NO, REOPEN', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _apiClient.confirmResolution(
+                complaintId: complaint.id,
+                isConfirmed: true,
+                feedback: feedbackController.text.trim(),
+              );
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Thank you! Resolution confirmed and ticket closed.')),
+              );
+              _refresh();
+            },
+            child: const Text('YES, CONFIRM FIX'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My Submissions'),
+        title: const Text('My Submissions & Status Trail'),
       ),
       body: RefreshIndicator(
         onRefresh: _refresh,
@@ -50,7 +109,7 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
                   children: [
                     const Icon(Icons.error_outline, size: 48, color: Colors.red),
                     const SizedBox(height: 12),
-                    Text('Error: ${snapshot.error}'),
+                    Text('Error loading reports: ${snapshot.error}'),
                     const SizedBox(height: 12),
                     ElevatedButton(onPressed: _refresh, child: const Text('Retry')),
                   ],
@@ -75,71 +134,106 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
                   elevation: 0,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(color: Colors.grey.shade200),
+                    side: BorderSide(color: Colors.grey.shade300),
                   ),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.all(12),
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        width: 60,
-                        height: 60,
-                        color: Colors.grey[200],
-                        child: complaint.imageUrl.isNotEmpty
-                            ? Image.network(complaint.imageUrl, fit: BoxFit.cover)
-                            : const Icon(Icons.image),
-                      ),
-                    ),
-                    title: Text(
-                      complaint.address.isNotEmpty
-                          ? complaint.address
-                          : 'Report #${complaint.id.substring(0, 8)}',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Column(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14.0),
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const SizedBox(height: 4),
-                        Text(
-                          complaint.userDescription.isNotEmpty
-                              ? complaint.userDescription
-                              : 'No description provided',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (complaint.imageUrl != null && complaint.imageUrl!.isNotEmpty)
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.network(
+                                  complaint.imageUrl!,
+                                  width: 60,
+                                  height: 60,
+                                  fit: BoxFit.cover,
+                                ),
+                              )
+                            else
+                              Container(
+                                width: 50,
+                                height: 50,
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Icon(Icons.build, color: AppTheme.primaryBlue),
+                              ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    complaint.rawText,
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    'Zone: ${complaint.campusZone.isNotEmpty ? complaint.campusZone : "General Campus"}',
+                                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 8),
+                        const Divider(height: 20),
                         Row(
                           children: [
-                            SeverityBadge(severity: complaint.severityScore),
+                            SeverityBadge(severity: complaint.computedPriority.round()),
+                            const SizedBox(width: 8),
+                            if (complaint.crowdReportCount > 1)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Colors.purple.shade50,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: Colors.purple.shade200),
+                                ),
+                                child: Text(
+                                  '👥 ${complaint.crowdReportCount} reports',
+                                  style: TextStyle(fontSize: 11, color: Colors.purple.shade700, fontWeight: FontWeight.bold),
+                                ),
+                              ),
                             const Spacer(),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
-                                color: Colors.blueGrey.withOpacity(0.1),
+                                color: _getStatusColor(complaint.status).withOpacity(0.12),
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
                                 complaint.status,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppTheme.primaryBlue,
+                                  fontWeight: FontWeight.bold,
+                                  color: _getStatusColor(complaint.status),
                                 ),
                               ),
                             ),
                           ],
                         ),
+                        if (complaint.status == 'RESOLVED') ...[
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () => _showConfirmationDialog(complaint),
+                              icon: const Icon(Icons.rate_review, size: 16),
+                              label: const Text('Confirm Fix or Reopen Ticket'),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
-                    onTap: () {
-                      Navigator.pushNamed(
-                        context,
-                        AppRoutes.issueDetail,
-                        arguments: complaint.id,
-                      );
-                    },
                   ),
                 );
               },
@@ -148,5 +242,23 @@ class _MyReportsScreenState extends State<MyReportsScreen> {
         ),
       ),
     );
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status) {
+      case 'CLOSED':
+        return Colors.green;
+      case 'RESOLVED':
+        return AppTheme.secondaryTeal;
+      case 'IN_PROGRESS':
+      case 'ASSIGNED':
+        return AppTheme.primaryBlue;
+      case 'REOPENED':
+        return Colors.orange;
+      case 'REJECTED':
+        return Colors.red;
+      default:
+        return Colors.blueGrey;
+    }
   }
 }

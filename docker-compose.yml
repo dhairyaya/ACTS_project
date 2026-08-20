@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: acts_postgres_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-acts_db}
+      POSTGRES_USER: ${DB_USER:-acts_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-acts_secret_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: acts_backend_api
+    restart: unless-stopped
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+      - backend_media:/app/media
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production
+      - DB_NAME=${DB_NAME:-acts_db}
+      - DB_USER=${DB_USER:-acts_user}
+      - DB_PASSWORD=${DB_PASSWORD:-acts_secret_password}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    depends_on:
+      - db
+
+volumes:
+  postgres_data:
+  backend_media:

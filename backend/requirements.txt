@@ -1,0 +1,24 @@
+# Web Framework & API
+Django>=4.2.0
+djangorestframework>=3.14.0
+django-cors-headers>=4.0.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Computer Vision & Image Processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+
+# YOLO Object Detection
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Artificial Intelligence (Gemini)
+google-genai>=0.1.0
+
+# Utilities & Config
+python-dotenv>=1.0.0
+requests>=2.31.0
+gunicorn>=21.2.0

@@ -1,4 +1,4 @@
-# ACTS (Automated Civic Triage System)
+# ACTS (Autonomous Civic Triage System)
 
 ACTS is an AI and Computer Vision powered civic complaint reporting and triage platform. It combines mobile image capture, GPS validation, YOLO defect detection, and Gemini Multimodal AI to verify, score severity, and prioritize civic issues for municipality authorities.
 
